@@ -1,0 +1,46 @@
+TAG EDITOR ENCODER COMPATIBILITY RESULTS
+============================================================
+Date: 2026-05-01 19:56:29
+
+Total: 12 passed, 0 failed
+
+[PASS] ID3v2.2 tag reading
+    OK: TITLE='ID3v2.2 Test Title'
+    OK: ARTIST='Old iTunes Ripper'
+    OK: ALBUM='Compatibility Test Album'
+    OK: DATE='2005'
+    OK: TRACKNUMBER='7'
+    OK: GENRE='Electronic'
+    audio-info: DURATION | 0:01 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 131 kbps | CHANNELS | mono | ENCODER | Lavc61.19 (delay: 576, padding: 1404)
+[PASS] ID3v2.2 PIC (album art)
+    OK: TITLE='v2.2 With Art'
+    OK: ARTIST='Art Test Artist'
+    OK: art=PNG 8×8 75B (PIC→APIC conversion verified)
+    audio-info: DURATION | 0:01 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 131 kbps | CHANNELS | mono | ENCODER | Lavc61.19 (delay: 576, padding: 1404)
+[PASS] ID3v1 fallback reading
+    OK: TITLE='ID3v1 Only Track'
+    OK: ARTIST='Vintage Encoder'
+    OK: ALBUM='Throwback Album'
+    OK: DATE='2003'
+    OK: TRACKNUMBER='5'
+    OK: GENRE='Techno'
+    audio-info: DURATION | 0:01 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 132 kbps | CHANNELS | mono | ENCODER | Lavc61.19 (delay: 576, padding: 1404)
+[PASS] Dual ID3v2+v1 (v2 preferred)
+    OK: TITLE='Dual Tags Track'
+    OK: ARTIST='Both Tags Artist'
+    audio-info: DURATION | 0:01 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 132 kbps | CHANNELS | mono | ENCODER | Lavc61.19 (delay: 576, padding: 1404)
+[PASS] Lyrics3v2 + ID3v1
+    OK: TITLE='Lyrics3 Track'
+    OK: ARTIST='Lyrics3 Artist'
+    audio-info: DURATION | 0:01 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 133 kbps | CHANNELS | mono | ENCODER | Lavc61.19 (delay: 576, padding: 1404)
+[PASS] v2.2 round-trip save: title='Round-trip Test Title', 21241B, v1_trailer=stripped
+[PASS] v1-only round-trip save: title='Round-trip Test Title', 21241B, v1_trailer=stripped
+[PASS] Dual round-trip (strips v1): title='Round-trip Test Title', 21241B, v1_trailer=stripped
+[PASS] delta: Luis Fonsi ft. Daddy Yankee - Despacito (Camellia 
+    tags=6, encoder=True, info: DURATION | 1:27 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 320 kbps | CHANNELS | stereo | ENCODER | LAME3.99r (delay: 576, padd
+[PASS] delta: Twitch - Avast Fluttershy's Ass.mp3
+    tags=11, encoder=False, info: DURATION | 4:00 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 320 kbps | CHANNELS | stereo
+[PASS] delta: Wendy's - Cold Drinks Training Video (DJ Edit).mp3
+    tags=7, encoder=False, info: DURATION | 2:13 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 320 kbps | CHANNELS | stereo
+[PASS] delta: Wilsta - DETOTATED WAM (Dubstep Wemix).mp3
+    tags=6, encoder=False, info: DURATION | 4:17 | SAMPLE RATE | 44.1 kHz | BIT DEPTH | 16 bit | BITRATE | 128 kbps | CHANNELS | stereo

@@ -914,6 +914,22 @@ const ID3_DISPLAY = {
 /** @type {Object.<string, string>} Reverse map: display names → frame IDs (for saving) */
 const ID3_FROM_DISPLAY = Object.fromEntries(Object.entries(ID3_DISPLAY).map(([k,v])=>[v,k]));
 
+/**
+ * ID3v2.2 → ID3v2.4 frame ID translation map.
+ * ID3v2.2 (used by iTunes pre-2004, early rippers) uses 3-character frame IDs.
+ * When loading a v2.2 file, these are translated to their v2.4 equivalents so
+ * the rest of the editor works uniformly with 4-char IDs.
+ */
+const ID3V22_TO_V24 = {
+  TT2: 'TIT2', TP1: 'TPE1', TP2: 'TPE2', TAL: 'TALB', TRK: 'TRCK',
+  TPA: 'TPOS', TYE: 'TDRC', TCO: 'TCON', TEN: 'TENC', TCM: 'TCOM',
+  TBP: 'TBPM', TLE: 'TLEN', TLA: 'TLAN', TCR: 'TCOP', TPB: 'TPUB',
+  TT1: 'TIT1', TT3: 'TIT3', TP3: 'TPE3', TP4: 'TPE4', TSS: 'TSSE',
+  TRC: 'TSRC', TMT: 'TMED', TDA: 'TDAT', TIM: 'TIME',
+  COM: 'COMM', ULT: 'USLT', PIC: 'APIC', WXX: 'WXXX', WCM: 'WCOM',
+  TCP: 'TCMP', TXX: 'TXXX',
+};
+
 // ==========
 // M4A / iTunes atoms
 // ==========
@@ -1808,6 +1824,154 @@ function detectFormat(buffer) {
 }
 
 // ==========
+// ID3v1
+// ==========
+//
+// ID3v1 is a 128-byte block appended to the END of an MP3 file:
+//   [0-2]   "TAG" magic
+//   [3-32]  title (30 bytes, null/space-padded Latin-1)
+//   [33-62] artist (30 bytes)
+//   [63-92] album (30 bytes)
+//   [93-96] year (4 bytes)
+//   [97-126] comment (30 bytes) — ID3v1.1: if [125]=0 and [126]!=0, [126] = track#
+//   [127]   genre (1 byte, index into genre list)
+//
+// Lyrics3v2 may appear between audio data and ID3v1:
+//   ... audio ... [lyrics3 fields] [6-byte size] "LYRICS200" [128-byte ID3v1]
+
+// Standard ID3v1 genre list (indices 0–191)
+const ID3V1_GENRES = [
+  'Blues','Classic Rock','Country','Dance','Disco','Funk','Grunge','Hip-Hop',
+  'Jazz','Metal','New Age','Oldies','Other','Pop','R&B','Rap','Reggae','Rock',
+  'Techno','Industrial','Alternative','Ska','Death Metal','Pranks','Soundtrack',
+  'Euro-Techno','Ambient','Trip-Hop','Vocal','Jazz+Funk','Fusion','Trance',
+  'Classical','Instrumental','Acid','House','Game','Sound Clip','Gospel','Noise',
+  'AlternRock','Bass','Soul','Punk','Space','Meditative','Instrumental Pop',
+  'Instrumental Rock','Ethnic','Gothic','Darkwave','Techno-Industrial','Electronic',
+  'Pop-Folk','Eurodance','Dream','Southern Rock','Comedy','Cult','Gangsta',
+  'Top 40','Christian Rap','Pop/Funk','Jungle','Native American','Cabaret',
+  'New Wave','Psychedelic','Rave','Showtunes','Trailer','Lo-Fi','Tribal',
+  'Acid Punk','Acid Jazz','Polka','Retro','Musical','Rock & Roll','Hard Rock',
+  'Folk','Folk-Rock','National Folk','Swing','Fast Fusion','Bebop','Latin','Revival',
+  'Celtic','Bluegrass','Avantgarde','Gothic Rock','Progressive Rock',
+  'Psychedelic Rock','Symphonic Rock','Slow Rock','Big Band','Chorus',
+  'Easy Listening','Acoustic','Humour','Speech','Chanson','Opera','Chamber Music',
+  'Sonata','Symphony','Booty Bass','Primus','Porn Groove','Satire','Slow Jam',
+  'Club','Tango','Samba','Folklore','Ballad','Power Ballad','Rhythmic Soul',
+  'Freestyle','Duet','Punk Rock','Drum Solo','A capella','Euro-House','Dance Hall',
+  'Goa','Drum & Bass','Club-House','Hardcore','Terror','Indie','BritPop',
+  'Negerpunk','Polsk Punk','Beat','Christian Gangsta Rap','Heavy Metal',
+  'Black Metal','Crossover','Contemporary Christian','Christian Rock','Merengue',
+  'Salsa','Thrash Metal','Anime','JPop','Synthpop','Abstract','Art Rock',
+  'Baroque','Bhangra','Big Beat','Breakbeat','Chillout','Downtempo','Dub',
+  'EBM','Eclectic','Electro','Electroclash','Emo','Experimental','Garage',
+  'Global','IDM','Illbient','Industro-Goth','Jam Band','Krautrock','Leftfield',
+  'Lounge','Math Rock','New Romantic','Nu-Breakz','Post-Punk','Post-Rock',
+  'Psytrance','Shoegaze','Space Rock','Trop Rock','World Music','Neoclassical',
+  'Audiobook','Audio Theatre','Neue Deutsche Welle','Podcast','Indie Rock',
+  'G-Funk','Dubstep','Garage Rock','Psybient',
+];
+
+/**
+ * Parse ID3v1 tags from the last 128 bytes of an MP3 file.
+ * Also detects and accounts for Lyrics3v2 blocks that precede ID3v1.
+ *
+ * @param {ArrayBuffer} buffer - Raw MP3 file bytes
+ * @returns {Object} Parsed result with tags array, rawFrames array, headerSize, and trailerSize
+ */
+function parseId3v1(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const dec = new TextDecoder('latin1');
+  const tags = [];
+
+  // trailerSize: bytes at end of file that are NOT audio data (ID3v1 + optional Lyrics3v2)
+  let trailerSize = 0;
+
+  if (buffer.byteLength >= 128) {
+    const tagOff = buffer.byteLength - 128;
+    if (bytes[tagOff] === 0x54 && bytes[tagOff+1] === 0x41 && bytes[tagOff+2] === 0x47) { // "TAG"
+      trailerSize = 128;
+      Logger.log('FILE', 'ID3v1 tag found at end of file');
+
+      const readField = (off, len) => dec.decode(bytes.slice(off, off + len)).replace(/\0+$/, '').trim();
+      const title   = readField(tagOff + 3, 30);
+      const artist  = readField(tagOff + 33, 30);
+      const album   = readField(tagOff + 63, 30);
+      const year    = readField(tagOff + 93, 4);
+      const comment = readField(tagOff + 97, 30);
+      const genreIdx = bytes[tagOff + 127];
+
+      // ID3v1.1: track number detection
+      let track = '';
+      if (bytes[tagOff + 125] === 0 && bytes[tagOff + 126] !== 0) {
+        track = String(bytes[tagOff + 126]);
+      }
+
+      if (title)  tags.push(['TIT2', title]);
+      if (artist) tags.push(['TPE1', artist]);
+      if (album)  tags.push(['TALB', album]);
+      if (year)   tags.push(['TDRC', year]);
+      if (track)  tags.push(['TRCK', track]);
+      if (comment) tags.push(['COMM', comment]);
+      if (genreIdx < ID3V1_GENRES.length) tags.push(['TCON', ID3V1_GENRES[genreIdx]]);
+
+      Logger.log('TAGS', `ID3v1: ${tags.length} fields (title="${title}" artist="${artist}")`);
+
+      // Check for Lyrics3v2 block before ID3v1
+      // "LYRICS200" appears at the 9 bytes before the ID3v1 tag
+      if (tagOff >= 9) {
+        const lyrEnd = tagOff;
+        const marker = dec.decode(bytes.slice(lyrEnd - 9, lyrEnd));
+        if (marker === 'LYRICS200') {
+          // 6-byte ASCII size field before "LYRICS200"
+          if (lyrEnd >= 15) {
+            const sizeStr = dec.decode(bytes.slice(lyrEnd - 15, lyrEnd - 9));
+            const lyrSize = parseInt(sizeStr, 10);
+            if (!isNaN(lyrSize) && lyrSize > 0 && lyrSize < buffer.byteLength) {
+              trailerSize = 128 + lyrSize + 15; // ID3v1 + lyrics block + size field + marker
+              Logger.log('FILE', `Lyrics3v2 detected: ${lyrSize}B, total trailer=${trailerSize}B`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { tags, rawFrames: [], headerSize: 0, trailerSize };
+}
+
+/**
+ * Detect ID3v1 tag and Lyrics3v2 block at end of file, returning total trailer byte count.
+ * Used by parseId3() (for files with ID3v2 headers) to know how much to strip on save.
+ *
+ * @param {ArrayBuffer} buffer - Raw MP3 file bytes
+ * @returns {number} Number of trailer bytes (ID3v1 + optional Lyrics3v2), 0 if none
+ */
+function detectId3v1Trailer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const dec = new TextDecoder('latin1');
+  if (buffer.byteLength < 128) return 0;
+  const tagOff = buffer.byteLength - 128;
+  if (bytes[tagOff] !== 0x54 || bytes[tagOff+1] !== 0x41 || bytes[tagOff+2] !== 0x47) return 0;
+  let trailer = 128;
+  // Check for Lyrics3v2
+  if (tagOff >= 9) {
+    const marker = dec.decode(bytes.slice(tagOff - 9, tagOff));
+    if (marker === 'LYRICS200' && tagOff >= 15) {
+      const sizeStr = dec.decode(bytes.slice(tagOff - 15, tagOff - 9));
+      const lyrSize = parseInt(sizeStr, 10);
+      if (!isNaN(lyrSize) && lyrSize > 0 && lyrSize < buffer.byteLength) {
+        trailer = 128 + lyrSize + 15;
+        Logger.log('FILE', `Lyrics3v2 + ID3v1 trailer: ${trailer}B`);
+      }
+    }
+  }
+  if (trailer > 128) return trailer;
+  Logger.log('FILE', `ID3v1 trailer: ${trailer}B`);
+  return trailer;
+}
+
+// ==========
 // ID3v2
 // ==========
 //
@@ -1846,12 +2010,14 @@ function parseId3(buffer) {
 
   // Check for "ID3" magic at start of file
   if (bytes[0] !== 0x49 || bytes[1] !== 0x44 || bytes[2] !== 0x33) {
-    Logger.warn('FILE', 'no ID3 header found');
+    Logger.warn('FILE', 'no ID3v2 header found, checking for ID3v1 at end of file');
+    // ID3v1 fallback: 128-byte block at end of file starting with "TAG"
+    const result = parseId3v1(buffer);
     Logger.groupEnd('FILE');
-    return { tags: [], rawFrames: [], headerSize: 0 };
+    return result;
   }
 
-  const majorVer = bytes[3]; // 3 = ID3v2.3, 4 = ID3v2.4
+  const majorVer = bytes[3]; // 2 = ID3v2.2, 3 = ID3v2.3, 4 = ID3v2.4
   const flags = bytes[5];
   // Tag size is stored as a 28-bit synchsafe integer (7 usable bits per byte)
   const tagSize = ((bytes[6] & 0x7F) << 21) | ((bytes[7] & 0x7F) << 14) |
@@ -1910,7 +2076,107 @@ function parseId3(buffer) {
   const rawFrames = [];
   let offset = 0; // offset within tagData (not buffer), starts at 0
 
-  // Skip extended header if present (flags bit 6)
+  // ID3v2.2: 3-char frame IDs, 3-byte sizes, no flags, no extended header
+  if (majorVer === 2) {
+    while (offset + 6 <= tagData.length) {
+      const id3 = String.fromCharCode(tagData[offset], tagData[offset+1], tagData[offset+2]);
+      if (id3 === '\0\0\0' || !/^[A-Z0-9]{3}$/.test(id3)) break;
+      const frameSize = (tagData[offset+3] << 16) | (tagData[offset+4] << 8) | tagData[offset+5];
+      const ds = offset + 6;
+      const de = ds + frameSize;
+      if (frameSize <= 0 || de > tagData.length) break;
+      const frameData = tagData.slice(ds, de);
+      // Translate to v2.4 frame ID
+      const id = ID3V22_TO_V24[id3] || id3;
+
+      if (id3 === 'PIC') {
+        // PIC frame: encoding(1) + imageFormat(3, "JPG"/"PNG", not null-terminated) + picType(1) + desc(null-term) + data
+        // Convert to APIC-compatible rawFrame data for extractArt() compatibility
+        const picEnc = frameData[0];
+        const imgFmt = String.fromCharCode(frameData[1], frameData[2], frameData[3]);
+        const picType = frameData[4];
+        let dpos = 5;
+        // Skip description (null-terminated, encoding-dependent)
+        if (picEnc === 1 || picEnc === 2) {
+          while (dpos + 1 < frameData.length && !(frameData[dpos] === 0 && frameData[dpos+1] === 0)) dpos += 2;
+          dpos += 2;
+        } else {
+          while (dpos < frameData.length && frameData[dpos] !== 0) dpos++;
+          dpos++;
+        }
+        // Build APIC-compatible data: encoding(1) + mime(null-term) + picType(1) + desc(\0) + imageData
+        const mime = imgFmt === 'PNG' ? 'image/png' : 'image/jpeg';
+        const mimeBytes = new TextEncoder().encode(mime);
+        const imgData = frameData.slice(dpos);
+        const apicData = new Uint8Array(1 + mimeBytes.length + 1 + 1 + 1 + imgData.length);
+        let apos = 0;
+        apicData[apos++] = 0; // encoding: Latin-1
+        apicData.set(mimeBytes, apos); apos += mimeBytes.length;
+        apicData[apos++] = 0; // null terminator for mime
+        apicData[apos++] = picType;
+        apicData[apos++] = 0; // empty description + null
+        apicData.set(imgData, apos);
+        rawFrames.push({ id: 'APIC', data: apicData });
+        Logger.log('FILE', `  v2.2 PIC→APIC: ${imgFmt} type=${picType} ${imgData.length}B`);
+      } else if (id.startsWith('T') && id !== 'TXXX') {
+        const enc = frameData[0];
+        const decoded = getDecoder(enc).decode(frameData.slice(1));
+        const val = decoded.replace(/\0+/g, '').trim();
+        tags.push([id, val]);
+        Logger.log('TAGS', `  ${id3}→${id} = ${val.length > 80 ? val.slice(0, 80) + '…' : val}`);
+      } else if (id === 'TXXX') {
+        const enc = frameData[0];
+        const full = getDecoder(enc).decode(frameData.slice(1));
+        const ni = full.indexOf('\0');
+        const desc = ni >= 0 ? full.slice(0, ni) : full;
+        const val  = ni >= 0 ? full.slice(ni + 1).replace(/\0+$/, '') : '';
+        tags.push(['TXXX:' + desc, val]);
+        Logger.log('TAGS', `  ${id3}→TXXX:${desc} = ${val.length > 80 ? val.slice(0,80)+'…' : val}`);
+      } else if (id === 'USLT') {
+        const enc = frameData[0];
+        const decoder = getDecoder(enc);
+        let pos = 1 + 3;
+        while (pos < frameData.length) {
+          if (enc === 1 || enc === 2) {
+            if (frameData[pos] === 0 && frameData[pos+1] === 0) { pos += 2; break; }
+            pos += 2;
+          } else {
+            if (frameData[pos] === 0) { pos += 1; break; }
+            pos += 1;
+          }
+        }
+        const lyricsText = decoder.decode(frameData.slice(pos)).replace(/\0+$/, '');
+        tags.push([id, lyricsText]);
+        Logger.log('TAGS', `  ${id3}→USLT: ${lyricsText.length} chars`);
+      } else if (id === 'COMM') {
+        const enc = frameData[0];
+        const decoder = getDecoder(enc);
+        let pos = 1 + 3;
+        while (pos < frameData.length) {
+          if (enc === 1 || enc === 2) {
+            if (frameData[pos] === 0 && frameData[pos+1] === 0) { pos += 2; break; }
+            pos += 2;
+          } else {
+            if (frameData[pos] === 0) { pos += 1; break; }
+            pos += 1;
+          }
+        }
+        const commentText = decoder.decode(frameData.slice(pos)).replace(/\0+$/, '');
+        tags.push([id, commentText]);
+        Logger.log('TAGS', `  ${id3}→COMM: ${commentText.length} chars`);
+      } else {
+        rawFrames.push({ id, data: frameData });
+        Logger.log('FILE', `  v2.2 raw frame: ${id3}→${id} (${frameSize}B)`);
+      }
+      offset = de;
+    }
+    Logger.log('FILE', `parsed ${tags.length} tags, ${rawFrames.length} raw frames (ID3v2.2)`);
+    const trailerSize = detectId3v1Trailer(buffer);
+    Logger.groupEnd('FILE');
+    return { tags, rawFrames, headerSize, trailerSize };
+  }
+
+  // Skip extended header if present (flags bit 6) — v2.3/v2.4 only
   if (flags & 0x40) {
     if (majorVer >= 4) {
       // v2.4: extended header size is synchsafe, includes itself
@@ -2034,8 +2300,9 @@ function parseId3(buffer) {
   }
 
   Logger.log('FILE', `parsed ${tags.length} tags, ${rawFrames.length} raw frames`);
+  const trailerSize = detectId3v1Trailer(buffer);
   Logger.groupEnd('FILE');
-  return { tags, rawFrames, headerSize };
+  return { tags, rawFrames, headerSize, trailerSize };
 }
 
 /**
@@ -2659,7 +2926,9 @@ function parseAudioInfo(buffer, format) {
           info.sampleRate = srateTable[srateIdx];
           info.channels = channelMode === 3 ? 1 : 2;
           info.bitDepth = 16; // MP3 is always decoded to 16-bit PCM
-          if (info.bitrate > 0) info.duration = (buffer.byteLength - startOff) * 8 / (info.bitrate * 1000);
+          const trailerSz = (parsedMeta && parsedMeta.trailerSize) || 0;
+          const audioBytes = buffer.byteLength - startOff - trailerSz;
+          if (info.bitrate > 0) info.duration = audioBytes * 8 / (info.bitrate * 1000);
           // Check for Xing/Info VBR header for accurate duration
           const isMono = (channelMode === 3);
           const sideInfoLen = (mpegVer === 3) ? (isMono ? 17 : 32) : (isMono ? 9 : 17);
@@ -2676,6 +2945,31 @@ function parseAudioInfo(buffer, format) {
                   info.duration = (frameCount * samplesPerFrame) / info.sampleRate;
                   info.bitrate = Math.round((buffer.byteLength - startOff) * 8 / info.duration / 1000);
                   vbrDetected = true;
+                }
+              }
+              // LAME tag: follows Xing header fields at a computed offset
+              // Xing: 4 (tag) + 4 (flags) + optional: 4 (frames) + 4 (bytes) + 100 (TOC) + 4 (quality)
+              let lameOff = xingOff + 8;
+              if (xFlags & 0x1) lameOff += 4;
+              if (xFlags & 0x2) lameOff += 4;
+              if (xFlags & 0x4) lameOff += 100;
+              if (xFlags & 0x8) lameOff += 4;
+              if (lameOff + 36 <= buffer.byteLength) {
+                const lTag = String.fromCharCode(bytes[lameOff], bytes[lameOff+1], bytes[lameOff+2], bytes[lameOff+3]);
+                if (lTag === 'LAME' || lTag === 'Lavf' || lTag === 'Lavc') {
+                  // Read 9-byte encoder version string
+                  let verStr = '';
+                  for (let vi = 0; vi < 9; vi++) {
+                    const ch = bytes[lameOff + vi];
+                    if (ch >= 32 && ch < 127) verStr += String.fromCharCode(ch);
+                  }
+                  info.encoder = verStr.trim();
+                  // Encoder delay + padding at LAME offset +21: 12-bit delay, 12-bit padding (packed into 3 bytes)
+                  const delayByte1 = bytes[lameOff + 21];
+                  const delayByte2 = bytes[lameOff + 22];
+                  const padByte = bytes[lameOff + 23];
+                  info.encoderDelay = (delayByte1 << 4) | (delayByte2 >> 4);
+                  info.encoderPadding = ((delayByte2 & 0x0F) << 8) | padByte;
                 }
               }
             }
@@ -2860,6 +3154,11 @@ function showAudioInfo(info) {
     ['bitrate',     info.bitrate ? info.bitrate + ' kbps' : '—'],
     ['channels',    info.channels === 1 ? 'mono' : info.channels === 2 ? 'stereo' : info.channels ? info.channels + 'ch' : '—'],
   ];
+  if (info.encoder) {
+    let encStr = info.encoder;
+    if (info.encoderDelay !== undefined) encStr += ` (delay: ${info.encoderDelay}, padding: ${info.encoderPadding})`;
+    stats.push(['encoder', encStr]);
+  }
   el.innerHTML = stats.map(([label, val]) =>
     `<div class="ai-stat"><span>${label}</span><span>${val}</span></div>`
   ).join('');
@@ -3012,7 +3311,10 @@ function saveFile() {
       if (currentArt) {
         localRawFrames.push({ id: 'APIC', data: buildApicFrame(currentArt) });
       }
-      const audio = currentBuffer.slice(parsedMeta.headerSize);
+      // Strip ID3v1/Lyrics3v2 trailer from end of audio if present (written by old encoders)
+      const audioStart = parsedMeta.headerSize;
+      const audioEnd = parsedMeta.trailerSize ? currentBuffer.byteLength - parsedMeta.trailerSize : currentBuffer.byteLength;
+      const audio = currentBuffer.slice(audioStart, audioEnd);
       out = writeId3(audio, tags, localRawFrames);
       mime = 'audio/mpeg';
     }
