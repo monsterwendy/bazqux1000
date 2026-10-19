@@ -1,10 +1,10 @@
-# Tag Editor
+# bazqux1000
 
 **Edit audio metadata directly in your browser. No upload, no server — all local.**
 
 → **[wendy.monster/tag-editor](https://wendy.monster/tag-editor/)**
 
-![Tag Editor](og.png)
+![bazqux1000](og.png)
 
 ---
 

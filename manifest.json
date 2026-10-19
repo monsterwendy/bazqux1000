@@ -1,6 +1,6 @@
 {
-  "name": "Tag Editor",
-  "short_name": "Tag Editor",
+  "name": "bazqux1000",
+  "short_name": "bazqux1000",
   "description": "Edit metadata in any audio format directly in your browser. No upload, no server — all local.",
   "start_url": "/tag-editor/",
   "display": "standalone",
